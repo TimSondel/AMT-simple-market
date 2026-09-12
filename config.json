@@ -1,0 +1,15 @@
+{
+  "steps": 5000,
+  "market_order_size_avg": 15,
+  "market_order_size_std": 5,
+  "limit_order_size_avg": 40,
+  "limit_order_size_std": 10,
+  "stop_loss_avg": 5,
+  "stop_loss_std": 2,
+  "target_avg": 8,
+  "target_std": 3,
+  "value_change_ratio": 0.1,
+  "spread": 5,
+  "value_strength": 0.6,
+  "candle_volume": 100
+}
