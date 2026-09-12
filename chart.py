@@ -49,7 +49,7 @@ class VolumeChart:
         candles = self.candles()
         if not candles:
             raise ValueError("brak transakcji w %s" % self.trades_path)
-        fig, ax = plt.subplots(figsize=(12, 6))
+        fig, ax = plt.subplots(figsize=(12, 6), dpi=300)
         for i, candle in enumerate(candles):
             color = "green" if candle["close"] >= candle["open"] else "red"
             ax.vlines(i, candle["low"], candle["high"], color=color)
