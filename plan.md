@@ -25,7 +25,7 @@ With that a time per step should be added to config.
 ***Sprint 2***
 
 Randomization:
-We will add an oscillating function based on random walk and that will influence the parameters of the simulation. The function must have 3 main parameters: an oscillation speed determining how often the value will change, oscillation strength determining how strong the random jumps will be skewed towards the center, and spread similar to value perception spread determining how wide the random zone will be around the center.
+We will add an oscillating function based on random walk and that will influence the parameters of the simulation. Function must have a center point around 0. when it goes negative for example -3, then it multiplies the parameter by 1/3, when its positive it will just multiply the parameter by the positive value. The function must have 4 main parameters: an oscillation speed determining how often the value will change, oscillation strength determining how strong the random jumps will be skewed towards the center,  spread similar to value perception spread determining how wide the random zone will be around the center, and step per jump
 
 This function will change following parameters of the simulation:
 1. value perception spread
@@ -33,4 +33,4 @@ This function will change following parameters of the simulation:
 3. average mkt size and standard diviation
 4. average limit size and standard diviation
 
-In the config file we will have 3 function parameters for each of above points giving us total of 12 parameters and 4 independent random functions
+In the config file we will have 4 function parameters for each of above points giving us total of 16 parameters and 4 independent random functions

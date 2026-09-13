@@ -5,9 +5,12 @@ Uzycie:
     python simulator.py --steps 100 --continue # kontynuacja zapisanej symulacji
     python simulator.py --chart                # symulacja + wykres swiec wolumenowych
 
-Liczba krokow domyslnie pochodzi z config.json ("steps").
+Liczba krokow domyslnie pochodzi z config.json ("steps"), a czas symulowany
+przypadajacy na krok z "time_per_step". Cztery niezalezne oscylatory
+("oscillators" w config.json) modyfikuja w trakcie symulacji spread i sile
+percepcji wartosci oraz srednie rozmiary i odchylenia zlecen.
 Dane time and sales zapisywane sa w data/trades.csv, a stan symulacji
-(w tym orderbook i otwarte pozycje) w data/state.json.
+(w tym orderbook, oscylatory i otwarte pozycje) w data/state.json.
 """
 
 import argparse
@@ -16,7 +19,7 @@ import json
 import math
 import os
 import random
-from datetime import datetime
+from datetime import datetime, timedelta
 
 CONFIG_PATH = "config.json"
 DATA_DIR = "data"
@@ -28,11 +31,44 @@ DEPTH = 10                  # liczba poziomow po kazdej stronie ksiazki
 MARKET_ORDER_PROB = 0.3     # szansa, ze krok symulacji to zlecenie rynkowe
 MAGNET_SCALE = 5.0          # w ilu spreadach odleglosc od fair value tlumi magnes
 CASCADE_LIMIT = 100         # zabezpieczenie przed nieskonczona kaskada
+SIM_START = datetime(2024, 1, 1, 9, 0)   # poczatek czasu symulowanego
 
 
 def order_size(avg, std):
     """Losowy rozmiar zlecenia (zawsze co najmniej 1)."""
     return max(1.0, round(random.gauss(avg, std), 2))
+
+
+def oscillator_step(value, params):
+    """Losowy krok oscylatora: skok, przyciaganie do srodka i granica strefy."""
+    if random.random() < params["speed"]:
+        value += random.choice([-1, 1]) * params["step_per_jump"]
+        value -= params["strength"] * value
+        value = max(-params["spread"], min(params["spread"], value))
+    return value
+
+
+def oscillator_multiplier(value):
+    """Dodatnia wartosc mnozy parametr, ujemna dzieli (np. 3 -> x3, -3 -> x1/3)."""
+    size = max(abs(value), 1.0)     # blisko zera oscylator nie zmienia parametru
+    return size if value > 0 else 1.0 / size
+
+
+def step_parameters(state, cfg):
+    """Aktualizuje oscylatory i zwraca parametry symulacji na najblizszy krok."""
+    values = state["oscillators"]
+    for name, params in cfg["oscillators"].items():
+        values[name] = oscillator_step(values.get(name, 0.0), params)
+
+    effective = dict(cfg)
+    effective["spread"] = max(1, round(cfg["spread"] * oscillator_multiplier(values["value_spread"])))
+    effective["value_strength"] = min(1.0, max(0.0, cfg["value_strength"]
+                                             * oscillator_multiplier(values["value_strength"])))
+    for key, name in (("market_order_size", "market_size"), ("limit_order_size", "limit_size")):
+        multiplier = oscillator_multiplier(values[name])
+        effective[key + "_avg"] = cfg[key + "_avg"] * multiplier
+        effective[key + "_std"] = cfg[key + "_std"] * multiplier
+    return effective
 
 
 class Orderbook:
@@ -141,6 +177,12 @@ def simulation_step(ob, state, cfg, log):
     state["step"] += 1
     step_no = state["step"]
 
+    # 0. oscylatory zmieniaja parametry symulacji na ten krok
+    cfg = step_parameters(state, cfg)
+    if cfg["spread"] != ob.spread:
+        ob.spread = cfg["spread"]
+        ob.fill()       # nowy spread przesuwa poziom cen w ksiedze
+
     # 1. percepcja wartosci zmienia sie losowo
     if random.random() < cfg["value_change_ratio"]:
         state["fair_value"] += random.choice([-1, 1]) * ob.spread
@@ -211,13 +253,15 @@ def run(cfg, steps, trades_path=TRADES_PATH, state_path=STATE_PATH, cont=False):
                        {int(p): s for p, s in state["asks"]})
         trades_file = open(trades_path, "a", newline="")
         fresh = False
+    state.setdefault("oscillators", {name: 0.0 for name in cfg["oscillators"]})
 
     writer = csv.writer(trades_file)
     if fresh:
         writer.writerow(["time", "step", "price", "size", "side", "kind"])
 
     def log(step_no, price, size, side, kind):
-        writer.writerow([datetime.now().isoformat(timespec="seconds"),
+        when = SIM_START + timedelta(seconds=step_no * cfg["time_per_step"])
+        writer.writerow([when.isoformat(timespec="seconds"),
                          step_no, price, size, side, kind])
 
     try:
