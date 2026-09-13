@@ -16,6 +16,47 @@ TRADES_PATH = os.path.join("data", "trades.csv")
 CHART_PATH = os.path.join("data", "chart.png")
 
 
+def read_trades(trades_path=TRADES_PATH):
+    """Wczytuje transakcje (price, size, side) z pliku CSV."""
+    with open(trades_path) as f:
+        return [(int(row["price"]), float(row["size"]), row["side"])
+                for row in csv.DictReader(f)]
+
+
+class CandleBuilder:
+    """Buduje swiece o stalym wolumenie oraz odpowiadajace im swiece delty."""
+
+    def __init__(self, candle_volume):
+        self.candle_volume = candle_volume
+        self.candles = []
+        self.delta_candles = []
+        self.delta = 0.0        # skumulowana delta (kupno - sprzedaz)
+        self.volume = 0
+
+    def add(self, price, size, side):
+        """Dodaje transakcje do formujacej sie swiecy i zwraca te swiece."""
+        if self.volume == 0:
+            self.candles.append({"open": price, "high": price, "low": price,
+                                 "close": price, "volume": 0.0})
+            self.delta_candles.append({"open": self.delta, "high": self.delta,
+                                       "low": self.delta, "close": self.delta})
+        candle = self.candles[-1]
+        candle["high"] = max(candle["high"], price)
+        candle["low"] = min(candle["low"], price)
+        candle["close"] = price
+        candle["volume"] += size
+        self.volume += size
+        if self.volume >= self.candle_volume:
+            self.volume = 0
+
+        self.delta += size if side == "buy" else -size
+        delta_candle = self.delta_candles[-1]
+        delta_candle["high"] = max(delta_candle["high"], self.delta)
+        delta_candle["low"] = min(delta_candle["low"], self.delta)
+        delta_candle["close"] = self.delta
+        return candle
+
+
 class VolumeChart:
     """Rysuje swiece wolumenowe na podstawie zapisanych transakcji."""
 
@@ -23,26 +64,15 @@ class VolumeChart:
         self.candle_volume = candle_volume
         self.trades_path = trades_path
 
+    def read_trades(self):
+        return read_trades(self.trades_path)
+
     def candles(self):
         """Grupuje transakcje w swiece, z ktorych kazda ma stala ilosc wolumenu."""
-        candles = []
-        volume = 0
-        with open(self.trades_path) as f:
-            for row in csv.DictReader(f):
-                price = int(row["price"])
-                size = float(row["size"])
-                if volume == 0:
-                    candles.append({"open": price, "high": price, "low": price,
-                                    "close": price, "volume": 0.0})
-                candle = candles[-1]
-                candle["high"] = max(candle["high"], price)
-                candle["low"] = min(candle["low"], price)
-                candle["close"] = price
-                candle["volume"] += size
-                volume += size
-                if volume >= self.candle_volume:
-                    volume = 0
-        return candles
+        builder = CandleBuilder(self.candle_volume)
+        for price, size, side in self.read_trades():
+            builder.add(price, size, side)
+        return builder.candles
 
     def draw(self, output_path=CHART_PATH):
         """Rysuje swiece i zapisuje wykres do pliku."""

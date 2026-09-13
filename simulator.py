@@ -180,19 +180,53 @@ def simulation_step(ob, state, cfg, log):
     cascade(ob, state["positions"], step_no, log)
 
 
-def load_state():
-    if not os.path.exists(STATE_PATH):
+def load_state(state_path=STATE_PATH):
+    if not os.path.exists(state_path):
         return None
-    with open(STATE_PATH) as f:
+    with open(state_path) as f:
         return json.load(f)
 
 
-def save_state(ob, state):
+def save_state(ob, state, state_path=STATE_PATH):
     state["best_bid"] = ob.best_bid
     state["bids"] = [[p, s] for p, s in ob.bids.items()]
     state["asks"] = [[p, s] for p, s in ob.asks.items()]
-    with open(STATE_PATH, "w") as f:
+    with open(state_path, "w") as f:
         json.dump(state, f, indent=2)
+
+
+def run(cfg, steps, trades_path=TRADES_PATH, state_path=STATE_PATH, cont=False):
+    """Uruchamia symulacje i zapisuje transakcje oraz stan. Zwraca (state, orderbook)."""
+    os.makedirs(os.path.dirname(trades_path) or ".", exist_ok=True)
+    state = load_state(state_path) if cont else None
+    if state is None:
+        state = {"step": 0, "best_bid": INITIAL_PRICE, "fair_value": INITIAL_PRICE,
+                 "bids": [], "asks": [], "positions": []}
+        ob = Orderbook(cfg, state["best_bid"])
+        trades_file = open(trades_path, "w", newline="")
+        fresh = True
+    else:
+        ob = Orderbook(cfg, state["best_bid"],
+                       {int(p): s for p, s in state["bids"]},
+                       {int(p): s for p, s in state["asks"]})
+        trades_file = open(trades_path, "a", newline="")
+        fresh = False
+
+    writer = csv.writer(trades_file)
+    if fresh:
+        writer.writerow(["time", "step", "price", "size", "side", "kind"])
+
+    def log(step_no, price, size, side, kind):
+        writer.writerow([datetime.now().isoformat(timespec="seconds"),
+                         step_no, price, size, side, kind])
+
+    try:
+        for _ in range(steps):
+            simulation_step(ob, state, cfg, log)
+    finally:
+        trades_file.close()
+        save_state(ob, state, state_path)
+    return state, ob
 
 
 def main():
@@ -208,41 +242,16 @@ def main():
     with open(CONFIG_PATH) as f:
         cfg = json.load(f)
     steps = args.steps if args.steps is not None else cfg["steps"]
-    os.makedirs(DATA_DIR, exist_ok=True)
-
-    state = load_state() if args.cont else None
-    if state is None:
-        state = {"step": 0, "best_bid": INITIAL_PRICE, "fair_value": INITIAL_PRICE,
-                 "bids": [], "asks": [], "positions": []}
-        ob = Orderbook(cfg, state["best_bid"])
-        trades_file = open(TRADES_PATH, "w", newline="")
-        fresh = True
-    else:
-        ob = Orderbook(cfg, state["best_bid"],
-                       {int(p): s for p, s in state["bids"]},
-                       {int(p): s for p, s in state["asks"]})
-        trades_file = open(TRADES_PATH, "a", newline="")
-        fresh = False
-
-    writer = csv.writer(trades_file)
-    if fresh:
-        writer.writerow(["time", "step", "price", "size", "side", "kind"])
-
-    def log(step_no, price, size, side, kind):
-        writer.writerow([datetime.now().isoformat(timespec="seconds"),
-                         step_no, price, size, side, kind])
 
     try:
-        for _ in range(steps):
-            simulation_step(ob, state, cfg, log)
+        state, ob = run(cfg, steps, cont=args.cont)
     except KeyboardInterrupt:
         print("Przerwano przez uzytkownika.")
-    finally:
-        trades_file.close()
-        save_state(ob, state)
+        state, ob = load_state(), None
 
-    print("Krok: %d | mid: %s | fair value: %s | otwarte pozycje: %d"
-          % (state["step"], ob.mid, state["fair_value"], len(state["positions"])))
+    if ob is not None:
+        print("Krok: %d | mid: %s | fair value: %s | otwarte pozycje: %d"
+              % (state["step"], ob.mid, state["fair_value"], len(state["positions"])))
     print("Zapisano: %s, %s" % (TRADES_PATH, STATE_PATH))
 
     if args.chart:
