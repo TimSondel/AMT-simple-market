@@ -34,3 +34,7 @@ This function will change following parameters of the simulation:
 4. average limit size and standard diviation
 
 In the config file we will have 4 function parameters for each of above points giving us total of 16 parameters and 4 independent random functions
+
+***Sprint 3***
+
+Visibility - the oscillating function will be used to change how market reacts to changing value perception. on one side the fair value magnet will influence market orders but also limit orders - the book will be thinner on the side closer to value and thicker on the other side. The visibility function will determin the split of how the magnet will affect the market - by influencing limits or mkt orders. Parameters should also be added to config to steer that funciton

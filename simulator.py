@@ -28,7 +28,7 @@ TRADES_PATH = os.path.join(DATA_DIR, "trades.csv")
 PARAMS_NAME = "params.csv"      # parametry krok po kroku, obok pliku transakcji
 
 INITIAL_PRICE = 1000        # poczatkowy best bid
-DEPTH = 10                  # liczba poziomow po kazdej stronie ksiazki
+DEPTH = 25                  # liczba poziomow po kazdej stronie ksiazki
 MARKET_ORDER_PROB = 0.3     # szansa, ze krok symulacji to zlecenie rynkowe
 MAGNET_SCALE = 5.0          # w ilu spreadach odleglosc od fair value tlumi magnes
 CASCADE_LIMIT = 100         # zabezpieczenie przed nieskonczona kaskada
@@ -75,6 +75,10 @@ def step_parameters(state, cfg):
         multiplier = oscillator_multiplier(values[name])
         effective[key + "_avg"] = cfg[key + "_avg"] * multiplier
         effective[key + "_std"] = cfg[key + "_std"] * multiplier
+
+    # widocznosc magnesu: ile sily idzie w limity (0 = tylko zlecenia rynkowe)
+    zone = cfg["oscillators"]["visibility"]["spread"] or 1.0
+    effective["visibility_limit_share"] = min(1.0, max(0.0, 0.5 + values["visibility"] / (2.0 * zone)))
     return effective
 
 
@@ -84,6 +88,7 @@ class Orderbook:
     def __init__(self, cfg, best_bid, bids=None, asks=None):
         self.cfg = cfg
         self.spread = cfg["spread"]
+        self.skew = 0.0         # skos ksiazki od magnesu fair value
         self.best_bid = best_bid
         self.bids = dict(bids) if bids else {}
         self.asks = dict(asks) if asks else {}
@@ -97,20 +102,26 @@ class Orderbook:
     def mid(self):
         return (self.best_bid + self.best_ask) / 2
 
-    def limit_size(self):
-        return order_size(self.cfg["limit_order_size_avg"], self.cfg["limit_order_size_std"])
+    def side_multiplier(self, side):
+        """Strona blizej fair value jest ciensza, przeciwna grubsza."""
+        # skew > 0 (cena ma rosnac): bids grubsze, asks ciensze
+        return 1 - self.skew if side == "sell" else 1 + self.skew
+
+    def limit_size(self, side):
+        return order_size(self.cfg["limit_order_size_avg"],
+                          self.cfg["limit_order_size_std"]) * self.side_multiplier(side)
 
     def fill(self):
         """Uzupelnia puste miejsca w ksiedze i usuwa poziomy poza zasiegiem."""
         for price in range(self.best_bid, self.best_bid - DEPTH, -1):
             if price not in self.bids:
-                self.bids[price] = self.limit_size()
+                self.bids[price] = self.limit_size("buy")
         for price in list(self.bids):
             if not self.best_bid - DEPTH < price <= self.best_bid:
                 del self.bids[price]
         for price in range(self.best_ask, self.best_ask + DEPTH):
             if price not in self.asks:
-                self.asks[price] = self.limit_size()
+                self.asks[price] = self.limit_size("sell")
         for price in list(self.asks):
             if not self.best_ask <= price < self.best_ask + DEPTH:
                 del self.asks[price]
@@ -190,18 +201,24 @@ def simulation_step(ob, state, cfg, log, log_params=None):
         ob.spread = cfg["spread"]
         ob.fill()       # nowy spread przesuwa poziom cen w ksiedze
 
-    # 1. percepcja wartosci zmienia sie losowo
+    # 1. percepcja wartosci zmienia sie losowo o losowy zakres tickow
     if random.random() < cfg["value_change_ratio"]:
-        state["fair_value"] += random.choice([-1, 1]) * ob.spread
+        low, high = sorted(cfg["fair_value_spread"])
+        state["fair_value"] += random.choice([-1, 1]) * random.uniform(low, high)
 
-    # 2. kierunek zlecenia - fair value dziala jak magnes dla ceny
+    # 2. magnes fair value: czesc sily idzie w zlecenia rynkowe, czesc w limity.
+    # Widocznosc (cfg["visibility_limit_share"]) dzieli te sile, a skos ksiazki
+    # jest druga strona magnesu - strona blizej fair value jest ciensza.
     distance = (state["fair_value"] - ob.mid) / (MAGNET_SCALE * ob.spread)
-    p_buy = 0.5 + 0.5 * cfg["value_strength"] * math.tanh(distance)
+    pull = math.tanh(distance)
+    limit_share = cfg["visibility_limit_share"]
+    p_buy = 0.5 + 0.5 * cfg["value_strength"] * (1 - limit_share) * pull
     p_buy = min(max(p_buy, 0.01), 0.99)
-    side = "buy" if random.random() < p_buy else "sell"
+    ob.skew = min(0.8, max(-0.8, cfg["value_strength"] * limit_share * pull))
 
     # 3. zlecenie rynkowe (z stoplossem i targetem) albo limitowe
     if random.random() < MARKET_ORDER_PROB:
+        side = "buy" if random.random() < p_buy else "sell"
         size = order_size(cfg["market_order_size_avg"], cfg["market_order_size_std"])
         fills = ob.market_order(side, size)
         if fills:
@@ -218,8 +235,10 @@ def simulation_step(ob, state, cfg, log, log_params=None):
                                            "stop": entry + stop, "target": entry - target})
     else:
         # zlecenie limitowe nie ma stoplossow ani targetow - odswieza plynnosc
-        # na losowym poziomie (wycenia go od nowa, wiec ksiazka nie puchnie)
-        size = order_size(cfg["limit_order_size_avg"], cfg["limit_order_size_std"])
+        # na losowym poziomie (wycenia go od nowa, wiec ksiazka nie puchnie).
+        # O kierunku decyduje los, o grubosci strony - skos od magnesu.
+        side = "buy" if random.random() < 0.5 else "sell"
+        size = ob.limit_size(side)
         if side == "buy":
             ob.bids[ob.best_bid - random.randint(0, DEPTH - 1)] = size
         else:
@@ -252,17 +271,19 @@ PARAM_COLUMNS = ["time", "step", "price", "fair_value", "spread", "value_strengt
                  "market_order_size_avg", "market_order_size_std",
                  "limit_order_size_avg", "limit_order_size_std",
                  "osc_value_spread", "osc_value_strength",
-                 "osc_market_size", "osc_limit_size"]
+                 "osc_market_size", "osc_limit_size",
+                 "osc_visibility", "visibility_limit_share"]
 
 
 def params_row(step_no, price, fair_value, cfg, oscillators):
     """Wiersz z parametrami uzytymi w danym kroku symulacji."""
     return [sim_time(step_no, cfg["time_per_step"]).isoformat(timespec="seconds"), step_no, round(price, 4),
-            fair_value, cfg["spread"], round(cfg["value_strength"], 4),
+            round(fair_value, 2), cfg["spread"], round(cfg["value_strength"], 4),
             round(cfg["market_order_size_avg"], 4), round(cfg["market_order_size_std"], 4),
             round(cfg["limit_order_size_avg"], 4), round(cfg["limit_order_size_std"], 4),
             round(oscillators["value_spread"], 4), round(oscillators["value_strength"], 4),
-            round(oscillators["market_size"], 4), round(oscillators["limit_size"], 4)]
+            round(oscillators["market_size"], 4), round(oscillators["limit_size"], 4),
+            round(oscillators["visibility"], 4), round(cfg["visibility_limit_share"], 4)]
 
 
 def run(cfg, steps, trades_path=TRADES_PATH, state_path=STATE_PATH, cont=False):

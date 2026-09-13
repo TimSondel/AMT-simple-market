@@ -45,10 +45,9 @@ PARAM_CHARTS = [
                            ("market_order_size_std", "std", "#ef476f")]),
     ("limit order size", [("limit_order_size_avg", "avg", "#ffd166"),
                           ("limit_order_size_std", "std", "#ef476f")]),
-    ("oscylatory", [("osc_value_spread", "value spread", "#ffd166"),
-                    ("osc_value_strength", "value strength", "#06d6a0"),
-                    ("osc_market_size", "market size", "#4cc9f0"),
-                    ("osc_limit_size", "limit size", "#ef476f")]),
+    ("visibility (magnes: flow vs limity)", [("osc_visibility", "visibility", "#ffd166"),
+                                             ("visibility_limit_share", "udzial limitow",
+                                              "#4cc9f0")]),
 ]
 
 
@@ -135,7 +134,8 @@ class ParamsWindow(QMainWindow):
         """Wczytuje parametry symulacji i czysci wykresy."""
         rows = read_params(params_path)
         self.steps = np.array([row["step"] for row in rows], dtype=int)
-        self.values = {column: np.array([row[column] for row in rows], dtype=float)
+        # .get, bo starsze zapisy nie maja jeszcze wszystkich kolumn
+        self.values = {column: np.array([row.get(column, 0.0) for row in rows], dtype=float)
                        for column, _ in self.curves}
         self.target = 0
         self.redraw()
