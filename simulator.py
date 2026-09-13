@@ -25,6 +25,7 @@ CONFIG_PATH = "config.json"
 DATA_DIR = "data"
 STATE_PATH = os.path.join(DATA_DIR, "state.json")
 TRADES_PATH = os.path.join(DATA_DIR, "trades.csv")
+PARAMS_NAME = "params.csv"      # parametry krok po kroku, obok pliku transakcji
 
 INITIAL_PRICE = 1000        # poczatkowy best bid
 DEPTH = 10                  # liczba poziomow po kazdej stronie ksiazki
@@ -39,10 +40,16 @@ def order_size(avg, std):
     return max(1.0, round(random.gauss(avg, std), 2))
 
 
+def sim_time(step_no, time_per_step):
+    """Czas symulowany dla danego kroku."""
+    return SIM_START + timedelta(seconds=step_no * time_per_step)
+
+
 def oscillator_step(value, params):
     """Losowy krok oscylatora: skok, przyciaganie do srodka i granica strefy."""
     if random.random() < params["speed"]:
-        value += random.choice([-1, 1]) * params["step_per_jump"]
+        low, high = sorted(params["step_per_jump"])    # zakres skoku
+        value += random.choice([-1, 1]) * random.uniform(low, high)
         value -= params["strength"] * value
         value = max(-params["spread"], min(params["spread"], value))
     return value
@@ -172,7 +179,7 @@ def cascade(ob, positions, step_no, log):
             return
 
 
-def simulation_step(ob, state, cfg, log):
+def simulation_step(ob, state, cfg, log, log_params=None):
     """Jeden krok symulacji: jedno losowe zlecenie i obsluga kaskady."""
     state["step"] += 1
     step_no = state["step"]
@@ -221,6 +228,10 @@ def simulation_step(ob, state, cfg, log):
     # 4. kaskada po ruchu ceny
     cascade(ob, state["positions"], step_no, log)
 
+    # 5. zapis parametrow, ktore ksztaltowaly ten krok
+    if log_params:
+        log_params(step_no, ob.mid, state["fair_value"], cfg, state["oscillators"])
+
 
 def load_state(state_path=STATE_PATH):
     if not os.path.exists(state_path):
@@ -237,38 +248,63 @@ def save_state(ob, state, state_path=STATE_PATH):
         json.dump(state, f, indent=2)
 
 
+PARAM_COLUMNS = ["time", "step", "price", "fair_value", "spread", "value_strength",
+                 "market_order_size_avg", "market_order_size_std",
+                 "limit_order_size_avg", "limit_order_size_std",
+                 "osc_value_spread", "osc_value_strength",
+                 "osc_market_size", "osc_limit_size"]
+
+
+def params_row(step_no, price, fair_value, cfg, oscillators):
+    """Wiersz z parametrami uzytymi w danym kroku symulacji."""
+    return [sim_time(step_no, cfg["time_per_step"]).isoformat(timespec="seconds"), step_no, round(price, 4),
+            fair_value, cfg["spread"], round(cfg["value_strength"], 4),
+            round(cfg["market_order_size_avg"], 4), round(cfg["market_order_size_std"], 4),
+            round(cfg["limit_order_size_avg"], 4), round(cfg["limit_order_size_std"], 4),
+            round(oscillators["value_spread"], 4), round(oscillators["value_strength"], 4),
+            round(oscillators["market_size"], 4), round(oscillators["limit_size"], 4)]
+
+
 def run(cfg, steps, trades_path=TRADES_PATH, state_path=STATE_PATH, cont=False):
-    """Uruchamia symulacje i zapisuje transakcje oraz stan. Zwraca (state, orderbook)."""
+    """Uruchamia symulacje i zapisuje transakcje, parametry oraz stan."""
     os.makedirs(os.path.dirname(trades_path) or ".", exist_ok=True)
+    params_path = os.path.join(os.path.dirname(trades_path) or ".", PARAMS_NAME)
     state = load_state(state_path) if cont else None
     if state is None:
         state = {"step": 0, "best_bid": INITIAL_PRICE, "fair_value": INITIAL_PRICE,
                  "bids": [], "asks": [], "positions": []}
         ob = Orderbook(cfg, state["best_bid"])
         trades_file = open(trades_path, "w", newline="")
+        params_file = open(params_path, "w", newline="")
         fresh = True
     else:
         ob = Orderbook(cfg, state["best_bid"],
                        {int(p): s for p, s in state["bids"]},
                        {int(p): s for p, s in state["asks"]})
         trades_file = open(trades_path, "a", newline="")
+        params_file = open(params_path, "a", newline="")
         fresh = False
     state.setdefault("oscillators", {name: 0.0 for name in cfg["oscillators"]})
 
     writer = csv.writer(trades_file)
+    params_writer = csv.writer(params_file)
     if fresh:
         writer.writerow(["time", "step", "price", "size", "side", "kind"])
+        params_writer.writerow(PARAM_COLUMNS)
 
     def log(step_no, price, size, side, kind):
-        when = SIM_START + timedelta(seconds=step_no * cfg["time_per_step"])
-        writer.writerow([when.isoformat(timespec="seconds"),
+        writer.writerow([sim_time(step_no, cfg["time_per_step"]).isoformat(timespec="seconds"),
                          step_no, price, size, side, kind])
+
+    def log_params(step_no, price, fair_value, cfg, oscillators):
+        params_writer.writerow(params_row(step_no, price, fair_value, cfg, oscillators))
 
     try:
         for _ in range(steps):
-            simulation_step(ob, state, cfg, log)
+            simulation_step(ob, state, cfg, log, log_params)
     finally:
         trades_file.close()
+        params_file.close()
         save_state(ob, state, state_path)
     return state, ob
 

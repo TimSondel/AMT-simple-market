@@ -1,17 +1,24 @@
 """UI do symulatora rynku (PyQt5 + pyqtgraph).
 
-Pozwala generowac i zapisywac symulacje oraz odtwarzac je transakcja po transakcji
-- formujaca sie swieca zmienia sie wielokrotnie, zanim uzbiera docelowy wolumen.
-Pod wykresem ceny rysowany jest wykres skumulowanej delty, zsynchronizowany w osi X.
+Glowne okno pozwala generowac i zapisywac symulacje oraz odtwarzac je transakcja
+po transakcji - formujaca sie swieca zmienia sie wielokrotnie, zanim uzbiera
+docelowy wolumen. Pod wykresem ceny rysowany jest wykres skumulowanej delty,
+zsynchronizowany w osi X.
+
+Drugie okno pokazuje wykresy ukrytych parametrow symulacji (percepcja wartosci,
+spread, rozmiary zlecen i oscylatory). Oba okna odtwarzaja sie razem i razem
+reaguja na Stop/Start.
 
 Uzycie:
     python ui.py
 """
 
+import csv
 import json
 import os
 import sys
 
+import numpy as np
 import pyqtgraph as pg
 from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtWidgets import (QApplication, QGraphicsRectItem, QHBoxLayout,
@@ -24,9 +31,35 @@ from chart import CandleBuilder, read_trades
 
 CONFIG_PATH = "config.json"
 SIM_DIR = os.path.join("data", "simulations")
+PARAMS_NAME = simulator.PARAMS_NAME
 
 GREEN = pg.mkBrush(0, 170, 0)
 RED = pg.mkBrush(200, 0, 0)
+
+# wykresy w oknie parametrow: tytul i serie (kolumna z params.csv, podpis, kolor)
+PARAM_CHARTS = [
+    ("cena i fair value", [("price", "cena", "#ffd166"), ("fair_value", "fair value", "#4cc9f0")]),
+    ("fair value spread", [("spread", "spread", "#06d6a0")]),
+    ("value perception strength", [("value_strength", "strength", "#06d6a0")]),
+    ("market order size", [("market_order_size_avg", "avg", "#ffd166"),
+                           ("market_order_size_std", "std", "#ef476f")]),
+    ("limit order size", [("limit_order_size_avg", "avg", "#ffd166"),
+                          ("limit_order_size_std", "std", "#ef476f")]),
+    ("oscylatory", [("osc_value_spread", "value spread", "#ffd166"),
+                    ("osc_value_strength", "value strength", "#06d6a0"),
+                    ("osc_market_size", "market size", "#4cc9f0"),
+                    ("osc_limit_size", "limit size", "#ef476f")]),
+]
+
+
+def read_params(params_path):
+    """Wczytuje parametry krok po kroku; brak pliku oznacza puste wykresy."""
+    if not os.path.exists(params_path):
+        return []
+    with open(params_path) as f:
+        return [{"step": int(row["step"]),
+                 **{key: float(value) for key, value in row.items() if key not in ("time", "step")}}
+                for row in csv.DictReader(f)]
 
 
 class CandleChart:
@@ -71,6 +104,58 @@ class CandleChart:
         self.plot.setYRange(low - pad, high + pad)
 
 
+class ParamsWindow(QMainWindow):
+    """Okno z wykresami parametrow symulacji, przewijane razem z odtwarzaniem."""
+
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("Parametry symulacji")
+        self.resize(1100, 800)
+        self.steps = np.array([], dtype=int)
+        self.values = {}
+        self.target = 0
+
+        self.graphics = pg.GraphicsLayoutWidget()
+        self.setCentralWidget(self.graphics)
+        self.curves = []
+        for i, (title, series) in enumerate(PARAM_CHARTS):
+            plot = self.graphics.addPlot(row=i // 2, col=i % 2, title=title)
+            plot.showGrid(x=True, y=True, alpha=0.3)
+            legend = plot.addLegend(offset=(-8, 8))
+            legend.setLabelTextSize("7pt")
+            if self.curves:
+                plot.setXLink(self.first_plot)
+            else:
+                self.first_plot = plot
+            for column, label, color in series:
+                self.curves.append((column, plot.plot([], pen=pg.mkPen(color, width=1), name=label)))
+                self.values.setdefault(column, np.array([], dtype=float))
+
+    def load(self, params_path):
+        """Wczytuje parametry symulacji i czysci wykresy."""
+        rows = read_params(params_path)
+        self.steps = np.array([row["step"] for row in rows], dtype=int)
+        self.values = {column: np.array([row[column] for row in rows], dtype=float)
+                       for column, _ in self.curves}
+        self.target = 0
+        self.redraw()
+    def set_step(self, step):
+        """Ustawia krok odtwarzania; wykresy doganiaja go po pokazaniu okna."""
+        self.target = step
+        if self.isVisible():
+            self.redraw()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self.redraw()
+
+    def redraw(self):
+        count = int(np.searchsorted(self.steps, self.target, side="right"))
+        for column, curve in self.curves:
+            curve.setData(self.steps[:count], self.values[column][:count])
+        self.first_plot.setXRange(0, max(20, count + 2))
+
+
 class MainWindow(QMainWindow):
     def __init__(self, cfg):
         super().__init__()
@@ -99,6 +184,8 @@ class MainWindow(QMainWindow):
         self.chart = CandleChart(self.plot)
         self.delta_chart = CandleChart(self.delta_plot, set_x_range=False)
 
+        self.params_window = ParamsWindow()
+
         self.list = QListWidget()
         self.list.itemDoubleClicked.connect(self.replay)
         self.list.itemSelectionChanged.connect(self.show_info)
@@ -125,6 +212,8 @@ class MainWindow(QMainWindow):
         self.stop_button.clicked.connect(self.toggle)
         self.refresh_button = QPushButton("Odswiez liste")
         self.refresh_button.clicked.connect(self.refresh)
+        self.params_button = QPushButton("Okno parametrow")
+        self.params_button.clicked.connect(self.show_params)
 
         self.status = QLabel("Wybierz symulacje i kliknij Odtworz.")
 
@@ -140,6 +229,7 @@ class MainWindow(QMainWindow):
         panel.addWidget(self.speed_box)
         panel.addWidget(self.replay_button)
         panel.addWidget(self.stop_button)
+        panel.addWidget(self.params_button)
 
         layout = QHBoxLayout()
         layout.addLayout(panel)
@@ -180,8 +270,12 @@ class MainWindow(QMainWindow):
         folder = os.path.join(SIM_DIR, item.text())
         with open(os.path.join(folder, "state.json")) as f:
             state = json.load(f)
-        volume = sum(size for _, size, _ in read_trades(os.path.join(folder, "trades.csv")))
+        volume = sum(size for _, _, size, _ in read_trades(os.path.join(folder, "trades.csv")))
         self.info.setText("Kroki: %d   |   Wolumen: %.1f" % (state["step"], volume))
+
+    def show_params(self):
+        self.params_window.show()
+        self.params_window.raise_()
 
     def generate(self):
         name, ok = QInputDialog.getText(self, "Nowa symulacja", "Nazwa symulacji:")
@@ -209,9 +303,11 @@ class MainWindow(QMainWindow):
         if item is None:
             QMessageBox.information(self, "Brak symulacji", "Najpierw wybierz symulacje z listy.")
             return
-        self.trades = read_trades(os.path.join(SIM_DIR, item.text(), "trades.csv"))
+        folder = os.path.join(SIM_DIR, item.text())
+        self.trades = read_trades(os.path.join(folder, "trades.csv"))
         self.chart.clear()
         self.delta_chart.clear()
+        self.params_window.load(os.path.join(folder, PARAMS_NAME))
         self.builder = CandleBuilder(self.cfg["candle_volume"])
         self.index = 0
         self.set_speed(self.speed_box.value())
@@ -243,13 +339,14 @@ class MainWindow(QMainWindow):
             self.stop_button.setText("Start")
             self.status.setText("Koniec odtwarzania (%d transakcji)." % len(self.trades))
             return
-        price, size, side = self.trades[self.index]
+        step, price, size, side = self.trades[self.index]
         self.index += 1
         candle = self.builder.add(price, size, side)
         self.chart.update(self.builder.candles)
         self.delta_chart.update(self.builder.delta_candles)
-        self.status.setText("Transakcja %d/%d | cena %s | swieca: %.1f/%s wolumenu | delta: %.1f"
-                            % (self.index, len(self.trades), price, candle["volume"],
+        self.params_window.set_step(step)
+        self.status.setText("Transakcja %d/%d | krok %d | cena %s | swieca: %.1f/%s wolumenu | delta: %.1f"
+                            % (self.index, len(self.trades), step, price, candle["volume"],
                                self.cfg["candle_volume"], self.builder.delta))
 
 
@@ -259,6 +356,7 @@ def main():
     app = QApplication(sys.argv)
     window = MainWindow(cfg)
     window.show()
+    window.params_window.show()
     sys.exit(app.exec_())
 
 

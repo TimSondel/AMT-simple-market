@@ -17,9 +17,9 @@ CHART_PATH = os.path.join("data", "chart.png")
 
 
 def read_trades(trades_path=TRADES_PATH):
-    """Wczytuje transakcje (price, size, side) z pliku CSV."""
+    """Wczytuje transakcje (step, price, size, side) z pliku CSV."""
     with open(trades_path) as f:
-        return [(int(row["price"]), float(row["size"]), row["side"])
+        return [(int(row["step"]), int(row["price"]), float(row["size"]), row["side"])
                 for row in csv.DictReader(f)]
 
 
@@ -70,7 +70,7 @@ class VolumeChart:
     def candles(self):
         """Grupuje transakcje w swiece, z ktorych kazda ma stala ilosc wolumenu."""
         builder = CandleBuilder(self.candle_volume)
-        for price, size, side in self.read_trades():
+        for _, price, size, side in self.read_trades():
             builder.add(price, size, side)
         return builder.candles
 

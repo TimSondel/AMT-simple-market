@@ -1,14 +1,14 @@
 {
   "steps": 4000,
-  "market_order_size_avg": 7,
-  "market_order_size_std": 25,
+  "market_order_size_avg": 5,
+  "market_order_size_std": 14,
   "limit_order_size_avg": 20,
   "limit_order_size_std": 10,
   "stop_loss_avg": 5,
   "stop_loss_std": 8,
   "target_avg": 8,
   "target_std": 10,
-  "value_change_ratio": 0.02,
+  "value_change_ratio": 0.001,
   "spread": 2,
   "value_strength": 0.7,
   "candle_volume": 100,
@@ -18,25 +18,25 @@
       "speed": 0.1,
       "strength": 0.3,
       "spread": 3,
-      "step_per_jump": 1
+      "step_per_jump": [0.5, 1.5]
     },
     "value_strength": {
       "speed": 0.1,
       "strength": 0.3,
       "spread": 3,
-      "step_per_jump": 1
+      "step_per_jump": [0.5, 1.5]
     },
     "market_size": {
       "speed": 0.1,
       "strength": 0.3,
       "spread": 3,
-      "step_per_jump": 1
+      "step_per_jump": [0.5, 1.5]
     },
     "limit_size": {
       "speed": 0.1,
       "strength": 0.3,
       "spread": 3,
-      "step_per_jump": 1
+      "step_per_jump": [0.5, 1.5]
     }
   }
 }
